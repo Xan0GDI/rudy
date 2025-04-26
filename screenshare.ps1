@@ -54,11 +54,24 @@ if (-not $localIP) {
 }
 
 # Create firewall rule and start web server
-New-NetFirewallRule -DisplayName "AllowWebServer" -Direction Inbound -Protocol TCP -LocalPort $port -Action Allow | Out-Null
+try {
+    New-NetFirewallRule -DisplayName "AllowWebServer" -Direction Inbound -Protocol TCP -LocalPort $port -Action Allow | Out-Null
+} catch {
+    Write-Host "Failed to create firewall rule. Please run PowerShell as Administrator." -ForegroundColor Red
+    exit
+}
+
+# Start the web server
 $webServer = New-Object System.Net.HttpListener 
 $webServer.Prefixes.Add("http://"+$localIP+":$port/")
 $webServer.Prefixes.Add("http://localhost:$port/")
-$webServer.Start()
+try {
+    $webServer.Start()
+} catch {
+    Write-Host "Failed to start the web server. Ensure that the firewall rule was created successfully." -ForegroundColor Red
+    exit
+}
+
 Write-Host ("Network Devices Can Reach the server at : http://"+$localIP+":$port") 
 Write-Host "Press escape key for 5 seconds to exit" -ForegroundColor Cyan
 Write-Host "Hiding this window.." -ForegroundColor Yellow
@@ -75,8 +88,12 @@ if ($hide -eq 1) {
     } else {
         $Host.UI.RawUI.WindowTitle = 'hideme'
         $Proc = (Get-Process | Where-Object { $_.MainWindowTitle -eq 'hideme' })
-        $hwnd = $Proc.MainWindowHandle
-        $Type::ShowWindowAsync($hwnd, 0)
+        if ($Proc) {
+            $hwnd = $Proc.MainWindowHandle
+            if ($hwnd -ne [System.IntPtr]::Zero) {
+                $Type::ShowWindowAsync($hwnd, 0)
+            }
+        }
     }
 }
 
@@ -100,8 +117,7 @@ while ($true) {
         $response = $context.Response
         if ($context.Request.RawUrl -eq "/stream") {
             $response.ContentType = "multipart/x-mixed-replace; boundary=frame"
-            $response.Headers.Add(" ```powershell
-Content-Disposition", "inline; filename=stream.jpg")
+            $response.Headers.Add("Content-Disposition", "inline; filename=stream.jpg")
             $response.StatusCode = 200
             $response.OutputStream.Write([System.Text.Encoding]::UTF8.GetBytes("HTTP/1.1 200 OK`r`n"))
             $response.OutputStream.Write([System.Text.Encoding]::UTF8.GetBytes("Content-Type: multipart/x-mixed-replace; boundary=frame`r`n`r`n"))
