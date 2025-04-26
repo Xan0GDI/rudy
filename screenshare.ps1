@@ -63,8 +63,8 @@ try {
 
 # Start the web server
 $webServer = New-Object System.Net.HttpListener 
-$webServer.Prefixes.Add("http://"+$localIP+":$port/")
-$webServer.Prefixes.Add("http://localhost:$port/")
+$webServer.Prefixes.Add("http://$localIP:$port/")  # Listen on local IP
+$webServer.Prefixes.Add("http://localhost:$port/")  # Listen on localhost
 try {
     $webServer.Start()
 } catch {
@@ -72,7 +72,7 @@ try {
     exit
 }
 
-Write-Host ("Network Devices Can Reach the server at : http://"+$localIP+":$port") 
+Write-Host ("Network Devices Can Reach the server at : http://$localIP:$port") 
 Write-Host "Press escape key for 5 seconds to exit" -ForegroundColor Cyan
 Write-Host "Hiding this window.." -ForegroundColor Yellow
 Start-Sleep -Seconds 4
@@ -80,82 +80,32 @@ Start-Sleep -Seconds 4
 # Code to hide the console on Windows 10 and 11
 if ($hide -eq 1) {
     $Async = '[DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);'
-    $Type = Add-Type -MemberDefinition $Async -name Win32ShowWindowAsync -namespace Win32Functions -PassThru
-    $hwnd = (Get-Process -PID $pid).MainWindowHandle
-    
-    if ($hwnd -ne [System.IntPtr]::Zero) {
-        $Type::ShowWindowAsync($hwnd, 0)
-    } else {
-        $Host.UI.RawUI.WindowTitle = 'hideme'
-        $Proc = (Get-Process | Where-Object { $_.MainWindowTitle -eq 'hideme' })
-        if ($Proc) {
-            $hwnd = $Proc.MainWindowHandle
-            if ($hwnd -ne [System.IntPtr]::Zero) {
-                $Type::ShowWindowAsync($hwnd, 0)
-            }
-        }
-    }
+    $Type = Add-Type -MemberDefinition $Async - Name Win32ShowWindow -PassThru
+    $Type::ShowWindowAsync((Get-Process -Id $pid).MainWindowHandle, 0) | Out-Null
 }
 
-# Escape to exit key detection
-Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-
-public class Keyboard
-{
-    [DllImport("user32.dll")]
-    public static extern short GetAsyncKeyState(int vKey);
-}
-"@
-$VK_ESCAPE = 0x1B
-$startTime = $null
-
+# Main loop to handle requests
 while ($true) {
     try {
         $context = $webServer.GetContext()
+        $request = $context.Request
         $response = $context.Response
-        if ($context.Request.RawUrl -eq "/stream") {
-            $response.ContentType = "multipart/x-mixed-replace; boundary=frame"
-            $response.Headers.Add("Content-Disposition", "inline; filename=stream.jpg")
-            $response.StatusCode = 200
-            $response.OutputStream.Write([System.Text.Encoding]::UTF8.GetBytes("HTTP/1.1 200 OK`r`n"))
-            $response.OutputStream.Write([System.Text.Encoding]::UTF8.GetBytes("Content-Type: multipart/x-mixed-replace; boundary=frame`r`n`r`n"))
 
-            while ($true) {
-                # Capture the screen and convert to JPEG
-                $bitmap = New-Object System.Drawing.Bitmap -ArgumentList [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Width, [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Height
-                $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-                $graphics.CopyFromScreen(0, 0, 0, 0, $bitmap.Size)
-                $memoryStream = New-Object System.IO.MemoryStream
-                $bitmap.Save($memoryStream, [System.Drawing.Imaging.ImageFormat]::Jpeg)
-                $imageBytes = $memoryStream.ToArray()
-                $memoryStream.Close()
-                $bitmap.Dispose()
-                $graphics.Dispose()
-
-                # Send the image to the client
-                $response.OutputStream.Write([System.Text.Encoding]::UTF8.GetBytes("--frame`r`n"))
-                $response.OutputStream.Write([System.Text.Encoding]::UTF8.GetBytes("Content-Type: image/jpeg`r`n"))
-                $response.OutputStream.Write([System.Text.Encoding]::UTF8.GetBytes("Content-Length: " + $imageBytes.Length + "`r`n`r`n"))
-                $response.OutputStream.Write($imageBytes)
-                $response.OutputStream.Write([System.Text.Encoding]::UTF8.GetBytes("`r`n"))
-                $response.OutputStream.Flush()
-
-                # Check for escape key press
-                if ([Keyboard]::GetAsyncKeyState($VK_ESCAPE) -ne 0) {
-                    Write-Host "Exiting screen share..."
-                    break
-                }
-                Start-Sleep -Milliseconds 100
-            }
+        # Check for valid hostname
+        if ($request.Url.Host -ne $localIP -and $request.Url.Host -ne "localhost") {
+            $response.StatusCode = 400
+            $response.StatusDescription = "Bad Request - Invalid Hostname"
+            $response.OutputStream.Write([System.Text.Encoding]::UTF8.GetBytes("Bad Request - Invalid Hostname"))
+            $response.OutputStream.Close()
+            continue
         }
+
+        # Process the request and send a response
+        $response.ContentType = "text/plain"
+        $response.StatusCode = 200
+        $response.OutputStream.Write([System.Text.Encoding]::UTF8.GetBytes("Hello from $localIP"))
         $response.OutputStream.Close()
     } catch {
-        Write-Host "Error: $_"
-        break
+        Write-Host "An error occurred: $_" -ForegroundColor Red
     }
 }
-
-$webServer.Stop()
-Write-Host "Web server stopped."
